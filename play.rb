@@ -99,6 +99,10 @@ module SonicPi
       puts_c ">>> Stopped", :yellow
     end
 
+    def send_cue(n)
+      @eval_client.send("/run-code", @daemon_token, "cue :key, n: #{n}")
+    end
+
     def run_loop
       loop do
         # Check for keypress (non-blocking)
@@ -111,6 +115,7 @@ module SonicPi
           when 'e'      then @show_errors = !@show_errors; puts_c "Errors: #{@show_errors ? 'on' : 'off'}", :cyan
           when '?', 'h' then puts_c help_text, :cyan
           when 'q'      then break
+          when '0'..'9' then send_cue(ch.to_i)
           end
         end
 
