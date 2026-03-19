@@ -94,6 +94,16 @@ module SonicPi
       puts_c "Error reading file: #{e.message}", :red
     end
 
+    def toggle
+      if @stopped
+        run_file
+        @stopped = false
+      else
+        stop
+        @stopped = true
+      end
+    end
+
     def stop
       @eval_client.send("/stop-all-jobs", @daemon_token)
       puts_c ">>> Stopped", :yellow
@@ -105,11 +115,12 @@ module SonicPi
 
     def run_loop
       loop do
-        # Check for keypress (non-blocking)
-        if (ch = $stdin.read_nonblock(1) rescue nil)
+        # Wait for keypress or timeout (for file check)
+        if IO.select([$stdin], nil, nil, 0.3)
+          ch = $stdin.read_nonblock(1) rescue nil
           case ch
           when 'r'      then run_file
-          when '.'      then stop
+          when '.'      then toggle
           when 'l'      then @log_output = !@log_output; puts_c "Logs: #{@log_output ? 'on' : 'off'}", :cyan
           when 'i'      then @show_info = !@show_info; puts_c "Info: #{@show_info ? 'on' : 'off'}", :cyan
           when 'e'      then @show_errors = !@show_errors; puts_c "Errors: #{@show_errors ? 'on' : 'off'}", :cyan
@@ -121,8 +132,6 @@ module SonicPi
 
         # Check if file changed
         check_file
-
-        sleep 0.3
       end
     end
 
@@ -141,6 +150,7 @@ module SonicPi
         Watching: #{File.basename(@file)}
         Keys: r reload | . stop | l logs | i info | e errors | s samples | q quit
       HELP
+      .gsub("\n","\r\n")
     end
 
     # --- OSC handlers ---
