@@ -14,10 +14,9 @@ require_relative "/Applications/Sonic Pi.app/Contents/Resources/app/server/ruby/
 
 module SonicPi
   class Player
-    def initialize(file)
+    def initialize(file, verbose: false)
       @file = File.expand_path(file)
-      @log_output = true
-      @show_info = true
+      @verbose = verbose
       @show_errors = true
       @last_mtime = nil
       @server_started_prom = Promise.new
@@ -26,8 +25,9 @@ module SonicPi
 
       abort "File not found: #{@file}" unless File.exist?(@file)
 
-      # Start daemon
-      daemon_stdin, daemon_stdout_and_err, daemon_wait_thr = Open3.popen2e Paths.ruby_path, Paths.daemon_path
+      # Start daemon (clear gem env to avoid host gem warnings breaking port parsing)
+      daemon_env = {"GEM_PATH" => nil, "GEM_HOME" => nil}
+      daemon_stdin, daemon_stdout_and_err, daemon_wait_thr = Open3.popen2e(daemon_env, Paths.ruby_path, Paths.daemon_path)
       puts_c "Daemon started (pid #{daemon_wait_thr.pid})", :cyan
       puts_c "Logs: #{Paths.log_path}", :cyan
 
@@ -121,8 +121,7 @@ module SonicPi
           case ch
           when 'r'      then run_file
           when '.'      then toggle
-          when 'l'      then @log_output = !@log_output; puts_c "Logs: #{@log_output ? 'on' : 'off'}", :cyan
-          when 'i'      then @show_info = !@show_info; puts_c "Info: #{@show_info ? 'on' : 'off'}", :cyan
+          when 'l'      then @verbose = !@verbose; puts_c "Logs: #{@verbose ? 'on' : 'off'}", :cyan
           when 'e'      then @show_errors = !@show_errors; puts_c "Errors: #{@show_errors ? 'on' : 'off'}", :cyan
           when '?', 'h' then puts_c help_text, :cyan
           when 'q'      then break
@@ -148,7 +147,7 @@ module SonicPi
       <<~HELP
 
         Watching: #{File.basename(@file)}
-        Keys: r reload | . stop | l logs | i info | e errors | s samples | q quit
+        Keys: r reload | . stop | l logs | e errors | q quit
       HELP
       .gsub("\n","\r\n")
     end
@@ -157,12 +156,12 @@ module SonicPi
 
     def add_osc_handlers!(osc)
       osc.add_method("/log/multi_message") do |msg|
-        next unless @log_output && msg.is_a?(Array)
+        next unless @verbose && msg.is_a?(Array)
         print_multi_message(msg)
       end
 
       osc.add_method("/log/info") do |msg|
-        next unless @log_output && @show_info
+        next unless @verbose
         puts_c "=> #{clean_text(msg[1])}", :blue
       end
 
@@ -238,15 +237,16 @@ module SonicPi
   end
 end
 
+verbose = ARGV.delete("--verbose")
 if ARGV.empty? || ARGV[0] == "-h" || ARGV[0] == "--help"
-  puts "Usage: play.rb <filename.rb>"
+  puts "Usage: play.rb [--verbose] <filename.rb>"
   puts ""
   puts "Starts Sonic Pi, loads the file, and reloads on save."
-  puts "Keys: r reload | . stop | l logs | i info | e errors | q quit"
+  puts "Keys: r reload | . stop | l logs | e errors | q quit"
   exit
 end
 
 $stdin.raw!
 at_exit { $stdin.cooked! }
 
-SonicPi::Player.new(ARGV[0])
+SonicPi::Player.new(ARGV[0], verbose: !!verbose)
