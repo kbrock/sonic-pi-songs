@@ -8,9 +8,9 @@ exec "/Applications/Sonic Pi.app/Contents/Resources/app/server/native/ruby/bin/r
 require 'io/console'
 require 'monitor'
 require 'open3'
-require_relative "/Applications/Sonic Pi.app/Contents/Resources/app/server/ruby/lib/sonicpi/osc/osc"
-require_relative "/Applications/Sonic Pi.app/Contents/Resources/app/server/ruby/paths"
-require_relative "/Applications/Sonic Pi.app/Contents/Resources/app/server/ruby/lib/sonicpi/promise"
+require "/Applications/Sonic Pi.app/Contents/Resources/app/server/ruby/lib/sonicpi/osc/osc"
+require "/Applications/Sonic Pi.app/Contents/Resources/app/server/ruby/paths"
+require "/Applications/Sonic Pi.app/Contents/Resources/app/server/ruby/lib/sonicpi/promise"
 
 module SonicPi
   class Player
