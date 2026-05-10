@@ -1,15 +1,28 @@
 require "osc-ruby"
 
-require "sonicpi/chord"
 require "sonicpi/note"
-require "sonicpi/scale"
+
+require_relative "util"
 
 module SonicMyPi
   class Synth
+    include Util
+
+    SYNTH_ALIASES = {
+      sine:     :beep,
+      mod_beep: :mod_sine,
+    }.freeze
+
+    BEAT_SCALED_OPTS = %i[attack decay sustain release].freeze
+
+    # reference to osc client
     attr_accessor :client
-    attr_accessor :synth # following pi, not thrilled
     attr_reader :sampledir
+
+    # thread local values
+    attr_accessor :synth
     attr_accessor :bpm
+    attr_accessor :offset
 
     def initialize(host, port, sampledir: nil)
       @sampledir = sampledir
@@ -20,18 +33,23 @@ module SonicMyPi
       # state
       @bpm    = 120
       @synth  = :hollow
-      # sleep 0.5, 0.3, 100ms latency
-      @t0     = Time.now + 0.85 # 100ms latency
+      # 50ms latency + server start
+      @t0     = Time.now + 0.05 + 0.5
       @offset = 0
     end
 
     # use_synth
     # notes = (ring chord(:a3, :m7), chord(:f3, :major7), chord(:c3, :major7), chord(:g3, :major7))
     # play notes.tick, attack: 4, release: 6, amp: 0.5
-    def use_bpm(value) = @bpm= value
+    def use_bpm(value) = @bpm = value
 
     def use_synth(new_synth)
-      @synth = new_synth
+      @synth = SYNTH_ALIASES.fetch(new_synth, new_synth)
+    end
+
+    # no-op for v1: yields the block unchanged. v2 will route through an fx synth on a private bus.
+    def with_fx(_name, **_opts)
+      yield
     end
 
     # def measure
@@ -39,34 +57,31 @@ module SonicMyPi
     #   @offset = 0
     # end
 
-    def sleep(delay)
-      @offset += delay
+    def sleep(beats)
+      @offset += beats_to_seconds(beats)
     end
 
-    def chord(root, name)
-      SonicPi::Chord.new(root, name)
+    def beats_to_seconds(beats)
+      beats * 60.0 / @bpm
+    end
+
+    def scale_opts(opts)
+      opts.to_h { |k, v| [k, BEAT_SCALED_OPTS.include?(k) ? beats_to_seconds(v) : v] }
+    end
+
+    def s_new(synth_name, **opts)
+      ctrl = scale_opts(opts).flat_map { |k, v| [k.to_s, v.to_f] }
+      OSC::Message.new("/s_new", "sonic-pi-#{synth_name}", -1, 0, 0, *ctrl)
     end
 
     def play(notes, **opts)
-      # synth = opts.delete(:synth) || @synth
-      base = ["/s_new", "sonic-pi-#{synth}", -1, 0, 0]
-      # controls =
-      control = opts.flat_map { |n, v| [n.to_s, v.to_f] }
-
-      notes = resolve_notes(notes)
-      messages = notes.map { |note| [*base, *control, "note", note.to_f] }
-      send_play(messages)
+      msgs = resolve_notes(notes).map { |n| s_new(synth, **opts, note: n) }
+      send_bundle(msgs)
     end
 
-    # TODO: do I want to set default values for the args? kwargs if so
-    # TODO: ensure correct type for values
     # sample :bd_tek, amp: 1.2, cutoff: 90
     def sample(name, **opts)
-      # amp: 1.0, rate: 1.0
-      base = ["/s_new", "sonic-pi-basic_stereo_player", -1, 0, 0]
-      # controls
-      control = opts.flat_map { |n, v| [n.to_s, v.to_f] }
-      send_play([*base, "buf", bbuf(name), *control])
+      send_bundle(s_new(:basic_stereo_player, buf: bbuf(name), **opts))
     end
 
     # load synth defs
@@ -88,13 +103,14 @@ module SonicMyPi
 
     def sync(delay = 0.5)
       Kernel.sleep(delay)
+      @t0 += delay
     end
 
     def resolve_notes(notes)
       if notes.kind_of?(Array)
         notes
       elsif notes.kind_of?(Symbol)
-        [Note.resolve_note_name(notes)]
+        [SonicPi::Note.resolve_note_name(notes)]
       else
         [notes]
       end
@@ -110,17 +126,9 @@ module SonicMyPi
       end
     end
 
-    def send_play(messages)
-      message =
-        if messages&.first.kind_of?(Array)
-          messages.map { |msg| OSC::Message.new(*msg)}
-        else
-          [OSC::Message.new(*messages)]
-        end
-      # WORKS:
-      # message.each { |msg| @client.send(msg) }
-      # BROKEN:
-      @client.send(OSC::Bundle.new(@t0 + @offset, *message))
+    def send_bundle(messages)
+      messages = [messages] unless messages.is_a?(Array)
+      @client.send(OSC::Bundle.new(@t0 + @offset, *messages))
     end
 
     def send_msg(*args)
@@ -133,41 +141,30 @@ module SonicMyPi
     #   self
     # end
 
-    def self.run(synths: nil, port: 57110, sampledir: nil)
-      puts "spawn"
+    def self.run(synths: nil, port: 57110, sampledir: nil, &block)
+      puts "spawn scsynth process"
       scsynth_pid = spawn_synth(port: port)
-      Kernel.sleep(0.5)
       puts "/spawn"
       synth = new("127.0.0.1", port, sampledir: sampledir)
       if synths
+        puts "upload synthesizers"
         synth.upload(synths)
-        puts "upload"
         synth.sync(0.3)
         puts "/upload"
       end
 
-      if block_given?
-        begin
-          trap("TERM") { raise Interrupt }   # so ensure runs on kill
-          yield synth
-        ensure
-          synth&.msg("/quit") rescue nil
-          Process.wait(scsynth_pid) rescue nil if scsynth_pid
-        end
-      else
-        at_exit do
-          synth.msg("/g_freeAll", 0)   # free every running node in default group
-          puts "freeing"
-          synth.sync(0.05)
-          synth.msg("/quit") rescue nil
-          Process.wait(scsynth_pid) rescue nil
-        end
-
-        trap("INT")  { exit }
-        trap("TERM") { exit }
-
-        synth
+      at_exit do
+        synth.send_msg("/g_freeAll", 0) rescue nil
+        synth.sync(0.05)
+        synth.send_msg("/quit") rescue nil
+        Process.wait(scsynth_pid) rescue nil
       end
+
+      trap("INT")  { exit }
+      trap("TERM") { exit }
+
+      block.arity == 0 ? synth.instance_eval(&block) : block.call(synth) if block_given?
+      synth
     end
 
     def self.spawn_synth(port: 57110, device: default_output_device)
@@ -175,8 +172,9 @@ module SonicMyPi
 
       args = [SCSYNTH, "-u", port.to_s, "-i", "0"]
       args += ["-H", "", device] if device
-      # returns pid
-      spawn(*args)
+      pid = spawn(*args)
+      Kernel.sleep(0.5) # NOTE: this number is hardcoded into Synth.t0
+      pid
     end
 
     def self.default_output_device
