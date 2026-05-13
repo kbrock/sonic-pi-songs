@@ -1,10 +1,18 @@
 require "osc-ruby"
 
+# Make Sonic Pi's bundled Ruby lib available before requiring sonicpi/*
+$LOAD_PATH.unshift "/Applications/Sonic Pi.app/Contents/Resources/app/server/ruby/lib"
+
 require "sonicpi/note"
 
 require_relative "util"
 
 module SonicMyPi
+  PIROOT    = "/Applications/Sonic Pi.app/Contents/Resources"
+  SCSYNTH   = "#{PIROOT}/app/server/native/scsynth"
+  SYNTHDEFS = "#{PIROOT}/etc/synthdefs/compiled"
+  SAMPLES   = "#{PIROOT}/etc/samples"
+
   class Synth
     include Util
 
@@ -24,11 +32,11 @@ module SonicMyPi
     attr_accessor :bpm
     attr_accessor :offset
 
-    def initialize(host, port, sampledir: nil)
+    def initialize(client:, sampledir: SAMPLES)
       @sampledir = sampledir
-      @client   = OSC::Client.new(host, port)
-      @bufs     = {}
-      @next_buf = 0
+      @client    = client
+      @bufs      = {}
+      @next_buf  = 0
 
       # state
       @bpm    = 120
@@ -36,12 +44,47 @@ module SonicMyPi
       # 50ms latency + server start
       @t0     = Time.now + 0.05 + 0.5
       @offset = 0
+
+      @live_loops   = []
+      @loop_warned  = {}
     end
 
     # use_synth
     # notes = (ring chord(:a3, :m7), chord(:f3, :major7), chord(:c3, :major7), chord(:g3, :major7))
     # play notes.tick, attack: 4, release: 6, amp: 0.5
     def use_bpm(value) = @bpm = value
+
+    DISPATCH_LOOKAHEAD = 2.0  # seconds of audio pre-scheduled into scsynth
+    AUTO_SLEEP_BEATS   = 0.25 # used when a live_loop body returns without sleeping
+
+    def live_loop(name, *_opts, &block)
+      @live_loops << { name: name, block: block, next_offset: @offset }
+    end
+
+    # Rolling-window dispatcher. Runs forever; exit via Ctrl-C.
+    def dispatch_loops!
+      return if @live_loops.empty?
+      loop do
+        soonest = @live_loops.min_by { |ll| ll[:next_offset] }
+        horizon = (Time.now - @t0) + DISPATCH_LOOKAHEAD
+
+        if soonest[:next_offset] <= horizon
+          @offset = soonest[:next_offset]
+          before  = @offset
+          self.class.yield_to(self, &soonest[:block])
+          if @offset == before
+            unless @loop_warned[soonest[:name]]
+              warn "live_loop :#{soonest[:name]} body did not sleep — auto-sleeping #{AUTO_SLEEP_BEATS} beats per iteration"
+              @loop_warned[soonest[:name]] = true
+            end
+            sleep(AUTO_SLEEP_BEATS)
+          end
+          soonest[:next_offset] = @offset
+        else
+          Kernel.sleep(soonest[:next_offset] - horizon)
+        end
+      end
+    end
 
     def use_synth(new_synth)
       @synth = SYNTH_ALIASES.fetch(new_synth, new_synth)
@@ -141,30 +184,32 @@ module SonicMyPi
     #   self
     # end
 
-    def self.run(synths: nil, port: 57110, sampledir: nil, &block)
-      puts "spawn scsynth process"
+    def self.run(synths: SYNTHDEFS, sampledir: SAMPLES, host: "127.0.0.1", port: 57110, &block)
       scsynth_pid = spawn_synth(port: port)
-      puts "/spawn"
-      synth = new("127.0.0.1", port, sampledir: sampledir)
+      synth = new(client: OSC::Client.new(host, port), sampledir: sampledir)
+      add_cleanup_on_shutdown(synth, scsynth_pid)
       if synths
-        puts "upload synthesizers"
         synth.upload(synths)
         synth.sync(0.3)
-        puts "/upload"
       end
+      yield_to(synth, &block) if block_given?
+      synth.dispatch_loops!
+      synth
+    end
 
+    def self.add_cleanup_on_shutdown(synth, scsynth_pid)
       at_exit do
         synth.send_msg("/g_freeAll", 0) rescue nil
         synth.sync(0.05)
         synth.send_msg("/quit") rescue nil
         Process.wait(scsynth_pid) rescue nil
       end
-
       trap("INT")  { exit }
       trap("TERM") { exit }
+    end
 
-      block.arity == 0 ? synth.instance_eval(&block) : block.call(synth) if block_given?
-      synth
+    def self.yield_to(synth, &block)
+      block.arity == 0 ? synth.instance_eval(&block) : block.call(synth)
     end
 
     def self.spawn_synth(port: 57110, device: default_output_device)
