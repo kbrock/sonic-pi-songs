@@ -153,7 +153,7 @@ module SonicMyPi
       if notes.kind_of?(Array)
         notes
       elsif notes.kind_of?(Symbol)
-        [SonicPi::Note.resolve_note_name(notes)]
+        [SonicPi::Note.resolve_midi_note(notes)]
       else
         [notes]
       end
