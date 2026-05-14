@@ -1,13 +1,5 @@
 # Chill Trance v3 — DSL-target shape
 #
-# Same musical content as chill1.rb, refactored to:
-#   - drop xpattern (unused here)
-#   - keep helpers (lpattern, on_beat, on_beat_choose) — pure Ruby, work in both Sonic Pi and our DSL
-#   - structure live_loops as `:name do ... end` blocks called once per iteration
-#
-# `with_fx` is left in to express musical intent. Our DSL will treat it as
-# a no-op until v2 implements real fx routing.
-#
 # Runs unchanged in Sonic Pi. The named primitives below are what our DSL
 # needs to support for parity:
 #
