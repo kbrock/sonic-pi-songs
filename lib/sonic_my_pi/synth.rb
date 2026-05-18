@@ -199,6 +199,7 @@ module SonicMyPi
 
     def self.add_cleanup_on_shutdown(synth, scsynth_pid)
       at_exit do
+        synth.send_msg("/clearSched") rescue nil
         synth.send_msg("/g_freeAll", 0) rescue nil
         synth.sync(0.05)
         synth.send_msg("/quit") rescue nil
