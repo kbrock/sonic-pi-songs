@@ -5,7 +5,7 @@ require "sonicpi/scale"
 module SonicMyPi
   module Util
     def chord(root, name) = SonicPi::Chord.new(root, name)
-    def scale(root, name) = SonicPi::Scale.new(root, name)
+    def scale(root, name, num_octaves: 1) = SonicPi::Scale.new(root, name, num_octaves)
 
     def rrand(lo, hi)     = lo + rng.rand * (hi - lo)
     def rrand_i(lo, hi)   = rng.rand(lo..hi)

@@ -11,6 +11,12 @@ describe SonicMyPi::Util do
     it "returns a SonicPi::Scale" do
       assert_kind_of SonicPi::Scale, helper.scale(:c4, :minor_pentatonic)
     end
+
+    it "spans num_octaves octaves" do
+      one = helper.scale(:c4, :minor_pentatonic).size
+      two = helper.scale(:c4, :minor_pentatonic, num_octaves: 2).size
+      assert_equal one * 2 - 1, two   # second octave reuses the top note
+    end
   end
 
   describe "#rrand" do
