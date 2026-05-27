@@ -85,6 +85,68 @@ describe SonicMyPi::Synth do
     end
   end
 
+  describe "#with_fx" do
+    it "raises on an unknown fx name" do
+      synth = create_synth
+      assert_raises(RuntimeError) { synth.with_fx(:wat) { } }
+    end
+
+    it "raises on nested with_fx" do
+      synth = create_synth
+      assert_raises(RuntimeError) do
+        synth.with_fx(:reverb) { synth.with_fx(:lpf) { } }
+      end
+    end
+
+    it "sends an immediate /s_new for the fx synth into G_FX on first call" do
+      synth = create_synth
+      synth.with_fx(:reverb) { }
+      fx_msg = synth.client.sent.find { |m|
+        m.is_a?(OSC::Message) && m.address == "/s_new" &&
+          m.to_a.first == "sonic-pi-fx_reverb"
+      }
+      refute_nil fx_msg
+      args = fx_msg.to_a
+      assert_equal SonicMyPi::Synth::G_FX, args[3]   # targetID is G_FX
+      in_bus_index = args.index("in_bus")
+      refute_nil in_bus_index
+      assert_equal 2.0, args[in_bus_index + 1]       # first private bus
+    end
+
+    it "caches the fx synth across calls (one /s_new per name)" do
+      synth = create_synth
+      synth.with_fx(:reverb) { }
+      synth.with_fx(:reverb) { }
+      fx_news = synth.client.sent.select { |m|
+        m.is_a?(OSC::Message) && m.address == "/s_new" &&
+          m.to_a.first == "sonic-pi-fx_reverb"
+      }
+      assert_equal 1, fx_news.size
+    end
+
+    it "threads out_bus through music synths inside the block" do
+      synth = create_synth
+      synth.use_synth :hollow
+      synth.with_fx(:reverb) { synth.play 60 }
+      bundle = synth.client.sent.last
+      play_msg = bundle.instance_variable_get(:@args).first
+      args = play_msg.to_a
+      out_bus_index = args.index("out_bus")
+      refute_nil out_bus_index
+      assert_equal 2.0, args[out_bus_index + 1]       # routes to reverb's in_bus
+    end
+
+    it "does not thread out_bus outside the block" do
+      synth = create_synth
+      synth.use_synth :hollow
+      synth.with_fx(:reverb) { }
+      synth.play 60
+      bundle = synth.client.sent.last
+      play_msg = bundle.instance_variable_get(:@args).first
+      refute_includes play_msg.to_a, "out_bus"
+    end
+  end
+
   def create_synth
     SonicMyPi::Synth.new(client: FakeClient.new)
   end

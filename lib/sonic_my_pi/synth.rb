@@ -26,6 +26,13 @@ module SonicMyPi
     G_MUSIC = 100  # all music synths attach here
     G_FX    = 101  # fx synths attach here; runs after G_MUSIC each audio frame
 
+    FX_MAP = {
+      reverb:  "fx_reverb",
+      lpf:     "fx_lpf",
+      echo:    "fx_echo",
+      flanger: "fx_flanger",
+    }.freeze
+
     # reference to osc client
     attr_accessor :client
     attr_reader :sampledir
@@ -50,6 +57,10 @@ module SonicMyPi
 
       @live_loops   = []
       @loop_warned  = {}
+
+      @fx_bus_stack = []
+      @fx_cache     = {}
+      @next_fx_bus  = 2   # busses 0,1 are stereo hardware out; private busses start at 2
     end
 
     # use_synth
@@ -99,9 +110,31 @@ module SonicMyPi
       instance_eval(File.read(path), path)
     end
 
-    # no-op for v1: yields the block unchanged. v2 will route through an fx synth on a private bus.
-    def with_fx(_name, **_opts)
+    # Route every synth created inside the block through an fx synth on a
+    # private audio bus. Cached for the song's lifetime: the first call with
+    # a given name allocates the bus and spawns the fx synth; later calls
+    # reuse it (and the original params win). Nested with_fx is not supported.
+    def with_fx(name, **opts)
+      raise "nested with_fx not supported" unless @fx_bus_stack.empty?
+      synthdef = FX_MAP[name] or raise "unknown fx: #{name.inspect}"
+
+      bus = @fx_cache[name] ||= begin
+        new_bus = allocate_fx_bus
+        ctrl = opts.flat_map { |k, v| [k.to_s, v.to_f] }
+        send_msg("/s_new", "sonic-pi-#{synthdef}", -1, 0, G_FX, "in_bus", new_bus.to_f, *ctrl)
+        new_bus
+      end
+
+      @fx_bus_stack.push(bus)
       yield
+    ensure
+      @fx_bus_stack.pop
+    end
+
+    def allocate_fx_bus
+      bus = @next_fx_bus
+      @next_fx_bus += 2  # stereo: claim a pair even if only one is referenced as in_bus
+      bus
     end
 
     # def measure
@@ -122,6 +155,7 @@ module SonicMyPi
     end
 
     def s_new(synth_name, **opts)
+      opts = { out_bus: @fx_bus_stack.last }.merge(opts) unless @fx_bus_stack.empty?
       ctrl = scale_opts(opts).flat_map { |k, v| [k.to_s, v.to_f] }
       OSC::Message.new("/s_new", "sonic-pi-#{synth_name}", -1, 0, G_MUSIC, *ctrl)
     end
