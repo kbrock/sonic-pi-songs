@@ -23,6 +23,9 @@ module SonicMyPi
 
     BEAT_SCALED_OPTS = %i[attack decay sustain release].freeze
 
+    G_MUSIC = 100  # all music synths attach here
+    G_FX    = 101  # fx synths attach here; runs after G_MUSIC each audio frame
+
     # reference to osc client
     attr_accessor :client
     attr_reader :sampledir
@@ -120,7 +123,7 @@ module SonicMyPi
 
     def s_new(synth_name, **opts)
       ctrl = scale_opts(opts).flat_map { |k, v| [k.to_s, v.to_f] }
-      OSC::Message.new("/s_new", "sonic-pi-#{synth_name}", -1, 0, 0, *ctrl)
+      OSC::Message.new("/s_new", "sonic-pi-#{synth_name}", -1, 0, G_MUSIC, *ctrl)
     end
 
     def play(notes, **opts)
@@ -196,8 +199,10 @@ module SonicMyPi
       add_cleanup_on_shutdown(synth, scsynth_pid)
       if synths
         synth.upload(synths)
-        synth.sync(0.3)
       end
+      synth.send_msg("/g_new", G_MUSIC, 0, 0)        # head of root
+      synth.send_msg("/g_new", G_FX, 3, G_MUSIC)     # immediately after G_MUSIC
+      synth.sync(0.3)
       yield_to(synth, &block) if block_given?
       synth.dispatch_loops!
       synth
