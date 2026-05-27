@@ -90,6 +90,12 @@ module SonicMyPi
       @synth = SYNTH_ALIASES.fetch(new_synth, new_synth)
     end
 
+    # Evaluate a song file in the synth's context. Inside the file, `use_bpm`,
+    # `live_loop`, `play`, etc. resolve as instance methods — no `s.` prefix.
+    def load_file(path)
+      instance_eval(File.read(path), path)
+    end
+
     # no-op for v1: yields the block unchanged. v2 will route through an fx synth on a private bus.
     def with_fx(_name, **_opts)
       yield
