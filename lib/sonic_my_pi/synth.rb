@@ -6,6 +6,7 @@ $LOAD_PATH.unshift "/Applications/Sonic Pi.app/Contents/Resources/app/server/rub
 require "sonicpi/note"
 
 require_relative "util"
+require_relative "synth_info"
 
 module SonicMyPi
   PIROOT    = "/Applications/Sonic Pi.app/Contents/Resources"
@@ -16,22 +17,8 @@ module SonicMyPi
   class Synth
     include Util
 
-    SYNTH_ALIASES = {
-      sine:     :beep,
-      mod_beep: :mod_sine,
-    }.freeze
-
-    BEAT_SCALED_OPTS = %i[attack decay sustain release].freeze
-
     G_MUSIC = 100  # all music synths attach here
     G_FX    = 101  # fx synths attach here; runs after G_MUSIC each audio frame
-
-    FX_MAP = {
-      reverb:  "fx_reverb",
-      lpf:     "fx_lpf",
-      echo:    "fx_echo",
-      flanger: "fx_flanger",
-    }.freeze
 
     # reference to osc client
     attr_accessor :client
@@ -58,9 +45,12 @@ module SonicMyPi
       @live_loops   = []
       @loop_warned  = {}
 
-      @fx_bus_stack = []
-      @fx_cache     = {}
-      @next_fx_bus  = 2   # busses 0,1 are stereo hardware out; private busses start at 2
+      @fx_bus_stack   = []
+      @fx_group_stack = []
+      @free_buses     = []    # released bus numbers + the wall time they're safe to reuse
+      @next_fx_bus    = 2     # busses 0,1 are stereo hardware out; private busses start at 2
+      @next_fx_group  = 1000  # group IDs above G_MUSIC/G_FX reserved range
+      @next_fx_node   = 2000  # fx node IDs distinct from group IDs
     end
 
     # use_synth
@@ -101,7 +91,7 @@ module SonicMyPi
     end
 
     def use_synth(new_synth)
-      @synth = SYNTH_ALIASES.fetch(new_synth, new_synth)
+      @synth = SynthInfo.synth_alias(new_synth)
     end
 
     # Evaluate a song file in the synth's context. Inside the file, `use_bpm`,
@@ -110,31 +100,52 @@ module SonicMyPi
       instance_eval(File.read(path), path)
     end
 
-    # Route every synth created inside the block through an fx synth on a
-    # private audio bus. Cached for the song's lifetime: the first call with
-    # a given name allocates the bus and spawns the fx synth; later calls
-    # reuse it (and the original params win). Nested with_fx is not supported.
+    # Route every synth created inside the block through a fresh fx synth on a
+    # private audio bus. Per Sonic Pi's model: each call spawns a new group +
+    # fx node (so opts are re-evaluated per call — `rand` works); music synths
+    # in the block live in that group; at block exit we gate the fx and free
+    # the group after its tail. Nests by stacking: inner block's group goes to
+    # the head of G_FX so it executes before outer's, and the inner fx writes
+    # to outer's in_bus.
     def with_fx(name, **opts)
-      raise "nested with_fx not supported" unless @fx_bus_stack.empty?
-      synthdef = FX_MAP[name] or raise "unknown fx: #{name.inspect}"
+      fx = SynthInfo.fx(name) or raise "unknown fx: #{name.inspect}"
+      in_bus     = allocate_fx_bus
+      group_id   = (@next_fx_group += 1)
+      fx_node    = (@next_fx_node += 1)
+      parent_out = @fx_bus_stack.last || 0
 
-      bus = @fx_cache[name] ||= begin
-        new_bus = allocate_fx_bus
-        ctrl = opts.flat_map { |k, v| [k.to_s, v.to_f] }
-        send_msg("/s_new", "sonic-pi-#{synthdef}", -1, 0, G_FX, "in_bus", new_bus.to_f, *ctrl)
-        new_bus
-      end
+      send_msg("/g_new", group_id, 0, G_FX)
+      ctrl = scale_opts(opts).flat_map { |k, v| [k.to_s, v.to_f] }
+      send_msg("/s_new", "sonic-pi-#{fx[:synthdef]}", fx_node, 1, group_id,
+               "in_bus", in_bus.to_f, "out_bus", parent_out.to_f, *ctrl)
 
-      @fx_bus_stack.push(bus)
+      @fx_bus_stack.push(in_bus)
+      @fx_group_stack.push(group_id)
       yield
     ensure
       @fx_bus_stack.pop
+      group = @fx_group_stack.pop
+      if group
+        gate_at = @t0 + @offset
+        free_at = gate_at + fx[:tail] + 0.2
+        @client.send(OSC::Bundle.new(gate_at, OSC::Message.new("/n_set", fx_node, "gate", 0.0)))
+        @client.send(OSC::Bundle.new(free_at, OSC::Message.new("/g_freeAll", group)))
+        @free_buses << { bus: in_bus, free_at: free_at }
+      end
     end
 
+    # Pull a bus whose previous fx has finished its tail; otherwise grow the
+    # monotonic counter. The free-list avoids exhausting SC's ~1008 private
+    # buses over a long session.
     def allocate_fx_bus
-      bus = @next_fx_bus
-      @next_fx_bus += 2  # stereo: claim a pair even if only one is referenced as in_bus
-      bus
+      now = Time.now
+      if (idx = @free_buses.index { |e| e[:free_at] <= now })
+        @free_buses.delete_at(idx)[:bus]
+      else
+        bus = @next_fx_bus
+        @next_fx_bus += 2  # stereo: claim a pair even if only one is referenced as in_bus
+        bus
+      end
     end
 
     # def measure
@@ -151,13 +162,14 @@ module SonicMyPi
     end
 
     def scale_opts(opts)
-      opts.to_h { |k, v| [k, BEAT_SCALED_OPTS.include?(k) ? beats_to_seconds(v) : v] }
+      opts.to_h { |k, v| [k, SynthInfo.beat_scaled?(k) ? beats_to_seconds(v) : v] }
     end
 
     def s_new(synth_name, **opts)
+      group = @fx_group_stack.last || G_MUSIC
       opts = { out_bus: @fx_bus_stack.last }.merge(opts) unless @fx_bus_stack.empty?
       ctrl = scale_opts(opts).flat_map { |k, v| [k.to_s, v.to_f] }
-      OSC::Message.new("/s_new", "sonic-pi-#{synth_name}", -1, 0, G_MUSIC, *ctrl)
+      OSC::Message.new("/s_new", "sonic-pi-#{synth_name}", -1, 0, group, *ctrl)
     end
 
     def play(notes, **opts)
