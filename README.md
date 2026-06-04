@@ -48,11 +48,13 @@ The pattern "swap sclang for another language, keep scsynth" is well-trodden. OS
 A lightweight runtime that dispatches a measure at a time directly to scsynth, leaving room for realtime input.
 Reuses Pi's synthdefs, samples, music theory, and synth metadata.
 
-Design choices we made along the way:
+Songs are written as song-structure templates (12-bar blues, verse-chorus-verse, etc.) where each measure picks from a small set of riffs with controlled randomness. Structure first, choices within structure.
+
+Where we diverge from Sonic Pi:
 
 - `tick` / `look` replaced by a loop over each beat of a measure. Songs send one full measure at a time instead of note-by-note.
-- `with_fx` reimplemented as a cached, song-long, single-level routing. Nested fx still pending.
-- `synth_info.rb` skipped. Hand-coded `FX_MAP` for four fx covers current songs; 10k lines of Pi metadata was not worth the import cost.
+- `SynthInfo` is a minimal subset of Pi's `synthinfo.rb` — currently covers four fx and the synth aliases used by current songs.
+- `with_fx` covers the four fx tabled in `SynthInfo`; doesn't accept Pi's `reps:` or `kill_delay:` opts.
 - `cue` / `sync` and cross-thread `set` / `get` deferred until multi-threaded loops become necessary. The single-threaded measure-at-a-time dispatcher covers everything we do today.
 
 Vendoring rules, for when we move Pi assets into this repo:
