@@ -58,7 +58,7 @@ module SonicMyPi
     # play notes.tick, attack: 4, release: 6, amp: 0.5
     def use_bpm(value) = @bpm = value
 
-    DISPATCH_LOOKAHEAD = 2.0  # seconds of audio pre-scheduled into scsynth
+    DISPATCH_LOOKAHEAD = 0.2  # seconds of audio pre-scheduled into scsynth
     AUTO_SLEEP_BEATS   = 0.25 # used when a live_loop body returns without sleeping
 
     def live_loop(name, *_opts, &block)
