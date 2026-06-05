@@ -129,7 +129,7 @@ module SonicMyPi
         gate_at = @t0 + @offset
         free_at = gate_at + fx[:tail] + 0.2
         @client.send(OSC::Bundle.new(gate_at, OSC::Message.new("/n_set", fx_node, "gate", 0.0)))
-        @client.send(OSC::Bundle.new(free_at, OSC::Message.new("/g_freeAll", group)))
+        @client.send(OSC::Bundle.new(free_at, OSC::Message.new("/n_free", group)))
         @free_buses << { bus: in_bus, free_at: free_at }
       end
     end
