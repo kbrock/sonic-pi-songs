@@ -179,7 +179,9 @@ module SonicMyPi
 
     # sample :bd_tek, amp: 1.2, cutoff: 90
     def sample(name, **opts)
-      send_bundle(s_new(:basic_stereo_player, buf: bbuf(name), **opts))
+      entry = bbuf(name)
+      player = entry[:channels] == 1 ? :basic_mono_player : :basic_stereo_player
+      send_bundle(s_new(player, buf: entry[:bufnum], **opts))
     end
 
     # load synth defs
@@ -220,8 +222,23 @@ module SonicMyPi
         @next_buf += 1
         filename = File.exist?(name.to_s) ? name.to_s : "#{sampledir}/#{name}.flac"
         send_msg("/b_allocRead", bufnum, filename)
-        bufnum
+        { bufnum: bufnum, channels: file_channels(filename) }
       end
+    end
+
+    # Read the channel count from the file header without round-tripping to
+    # scsynth (which would need /b_info + two-way OSC). FLAC STREAMINFO body
+    # starts at byte 8; channels - 1 sits in bits 100-102 of the body, which
+    # is bits 3-1 of file byte 20. Non-FLAC files fall back to stereo.
+    def file_channels(path)
+      bytes = File.binread(path, 21)
+      if bytes && bytes[0, 4] == "fLaC"
+        ((bytes.getbyte(20) >> 1) & 0x07) + 1
+      else
+        2
+      end
+    rescue
+      2
     end
 
     def send_bundle(messages)
